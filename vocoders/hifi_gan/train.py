@@ -9,8 +9,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-# from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-# from pytorch_lightning.loggers import TensorBoardLogger
 from meldataset import MelDataset, mel_spectrogram, get_dataset_filelist
 from models import Generator, MultiPeriodDiscriminator, MultiScaleDiscriminator, feature_loss, generator_loss, discriminator_loss
 from utils import plot_spectrogram, AttrDict, build_env
@@ -175,9 +173,9 @@ def main():
     build_env(a.config, 'config.json', a.checkpoint_path)
 
     # Setup logging
-    logger = pl.TensorBoardLogger(save_dir=a.checkpoint_path, name='logs')
-    checkpoint_callback = pl.ModelCheckpoint(dirpath=a.checkpoint_path, save_top_k=-1, every_n_train_steps=a.checkpoint_interval)
-    lr_monitor = pl.LearningRateMonitor(logging_interval='step')
+    logger = pl.loggers.TensorBoardLogger(save_dir=a.checkpoint_path, name='logs')
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath=a.checkpoint_path, save_top_k=-1, every_n_train_steps=a.checkpoint_interval)
+    lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
 
     model = Hifi_GAN(h, a)
     
