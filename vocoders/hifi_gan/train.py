@@ -177,11 +177,12 @@ def main():
     checkpoint_callback = pl.callbacks.ModelCheckpoint(dirpath=a.checkpoint_path, save_top_k=-1, every_n_train_steps=a.checkpoint_interval)
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
 
-    model = Hifi_GAN(h, a)
+    model = Hifi_GAN(a, h)
     
     trainer = pl.Trainer(
         max_epochs=a.training_epochs,
-        gpus=h.num_gpus,
+        devices=h.num_gpus if h.num_gpus > 0 else 1,
+        accelerator='gpu' if h.num_gpus > 0 else 'cpu',
         strategy="ddp" if h.num_gpus > 1 else None,
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,
