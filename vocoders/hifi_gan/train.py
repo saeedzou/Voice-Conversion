@@ -17,7 +17,7 @@ from utils import plot_spectrogram, AttrDict, build_env
 
 torch.backends.cudnn.benchmark = True
 
-class Hifi_GAN(pl.LighningModule):
+class Hifi_GAN(pl.LightningModule):
     def __init__(self, a, h):
         super(Hifi_GAN, self).__init__()
         self.h = h
