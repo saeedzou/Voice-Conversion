@@ -54,19 +54,20 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
 
     global mel_basis, hann_window
     if fmax not in mel_basis:
-        mel = librosa_mel_fn(sampling_rate, n_fft, num_mels, fmin, fmax)
+        mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax) # shape (num_mels, 1+n_fft//2)
         mel_basis[str(fmax)+'_'+str(y.device)] = torch.from_numpy(mel).float().to(y.device)
-        hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device)
+        hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device) # shape (win_size)
 
-    y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft-hop_size)/2), int((n_fft-hop_size)/2)), mode='reflect')
-    y = y.squeeze(1)
+    y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft-hop_size)/2), int((n_fft-hop_size)/2)), mode='reflect') # shape (1, 1, segment_size+int((n_fft-hop_size)/2)*2)
+    y = y.squeeze(1) # shape (1, segment_size+int((n_fft-hop_size)/2)*2)
 
     spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window[str(y.device)],
-                      center=center, pad_mode='reflect', normalized=False, onesided=True)
+                      center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=False) # shape (1, 1+n_fft//2, n_frames, 2)
+    # return_complex=False returns a tensor with an additional dimension for the real and imaginary parts
 
-    spec = torch.sqrt(spec.pow(2).sum(-1)+(1e-9))
+    spec = torch.sqrt(spec.pow(2).sum(-1)+(1e-9)) # sum over the complex dimension (=absolute value) # shape (1, 1+n_fft//2, n_frames)
 
-    spec = torch.matmul(mel_basis[str(fmax)+'_'+str(y.device)], spec)
+    spec = torch.matmul(mel_basis[str(fmax)+'_'+str(y.device)], spec) # shape (num_mels, n_frames)
     spec = spectral_normalize_torch(spec)
 
     return spec
@@ -124,21 +125,21 @@ class MelDataset(torch.utils.data.Dataset):
             audio = self.cached_wav
             self._cache_ref_count -= 1
 
-        audio = torch.FloatTensor(audio)
-        audio = audio.unsqueeze(0)
+        audio = torch.FloatTensor(audio) # shape (n_samples,)
+        audio = audio.unsqueeze(0) # shape (1, n_samples)
 
         if not self.fine_tuning:
             if self.split:
                 if audio.size(1) >= self.segment_size:
                     max_audio_start = audio.size(1) - self.segment_size
                     audio_start = random.randint(0, max_audio_start)
-                    audio = audio[:, audio_start:audio_start+self.segment_size]
+                    audio = audio[:, audio_start:audio_start+self.segment_size] # shape (1, segment_size)
                 else:
-                    audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant')
+                    audio = torch.nn.functional.pad(audio, (0, self.segment_size - audio.size(1)), 'constant') # shape (1, segment_size)
 
             mel = mel_spectrogram(audio, self.n_fft, self.num_mels,
                                   self.sampling_rate, self.hop_size, self.win_size, self.fmin, self.fmax,
-                                  center=False)
+                                  center=False) # shape (num_mels, n_frames)
         else:
             mel = np.load(
                 os.path.join(self.base_mels_path, os.path.splitext(os.path.split(filename)[-1])[0] + '.npy'))
