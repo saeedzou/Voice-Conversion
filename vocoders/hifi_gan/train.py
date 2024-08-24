@@ -24,14 +24,15 @@ class Hifi_GAN(pl.LightningModule):
         self.msd = MultiScaleDiscriminator()
         self.mpd = MultiPeriodDiscriminator()
         self.steps = 0
+        self.automatic_optimization = False 
 
     def forward(self, x):
         return self.generator(x)
     
-    def training_step(self, batch, batch_idx, optimizer_idx):
+    def training_step(self, batch, batch_idx):
         x, y, _, y_mel = batch # x: mel, y: raw audio, y_mel: mel with different fmax
         y = y.unsqueeze(1) # add channel dimension
-
+        
         y_g_hat = self.generator(x)
         y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), 
                                       self.h.n_fft, 
@@ -42,109 +43,127 @@ class Hifi_GAN(pl.LightningModule):
                                       self.h.fmin, 
                                       self.h.fmax)
         
+        # Access optimizers manually
+        opt_g, opt_d = self.optimizers()
+
+        # Access scheduler manually
+        sch_g, sch_d = self.lr_schedulers()
+
         # Discriminator
-        if optimizer_idx == 0:
-            # Multi-Period Discriminator
-            y_dp_hat_r, y_dp_hat_g, _, _ = self.mpd(y, y_g_hat.detach())
-            loss_disc_p = discriminator_loss(y_dp_hat_r, y_dp_hat_g)
+        self.toggle_optimizer(opt_d)
+        # Multi-Period Discriminator
+        y_dp_hat_r, y_dp_hat_g, _, _ = self.mpd(y, y_g_hat.detach())
+        loss_disc_p, _, _ = discriminator_loss(y_dp_hat_r, y_dp_hat_g)
 
-            # Multi-Scale Discriminator
-            y_ds_hat_r, y_ds_hat_g = self.msd(y, y_g_hat.detach())
-            loss_disc_s = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
+        # Multi-Scale Discriminator
+        y_ds_hat_r, y_ds_hat_g, _, _ = self.msd(y, y_g_hat.detach())
+        loss_disc_s, _, _ = discriminator_loss(y_ds_hat_r, y_ds_hat_g)
 
-            loss_disc = loss_disc_p + loss_disc_s
-            return loss_disc
+        loss_disc = loss_disc_p + loss_disc_s
+
+        self.manual_backward(loss_disc)
+        opt_d.step()
+        sch_d.step()
+        opt_d.zero_grad()
+        self.untoggle_optimizer(opt_d)
         
         # Generator
-        if optimizer_idx == 1:
-            # L1 Mel-Spectrogram Loss
-            loss_mel = F.l1_loss(y_g_hat_mel, y_mel) * 45 # 45 is lambda value of mel loss according to the paper
+        self.toggle_optimizer(opt_g)
+        # L1 Mel-Spectrogram Loss
+        loss_mel = F.l1_loss(y_g_hat_mel, y_mel) * 45 # 45 is lambda value of mel loss according to the paper
 
-            # Feature Matching Loss
-            y_dp_hat_r, y_dp_hat_g, fmap_dp_r, fmap_dp_g = self.mpd(y, y_g_hat)
-            y_ds_hat_r, y_ds_hat_g, fmap_ds_r, fmap_ds_g = self.msd(y, y_g_hat)
-            
-            loss_fm_p = feature_loss(fmap_dp_r, fmap_dp_g)
-            loss_fm_s = feature_loss(fmap_ds_r, fmap_ds_g)
-            
-            loss_gen_p, _ = generator_loss(y_dp_hat_g)
-            loss_gen_s, _ = generator_loss(y_ds_hat_g)
-
-            loss_gen = loss_mel + loss_fm_p + loss_fm_s + loss_gen_p + loss_gen_s
-            return loss_gen
+        # Feature Matching Loss
+        y_dp_hat_r, y_dp_hat_g, fmap_dp_r, fmap_dp_g = self.mpd(y, y_g_hat)
+        y_ds_hat_r, y_ds_hat_g, fmap_ds_r, fmap_ds_g = self.msd(y, y_g_hat)
         
-        def validation_step(self, batch, batch_idx):
-            x, y, _, y_mel = batch
-            y = y.unsqueeze(1)
-
-            y_g_hat = self.generator(x)
-            y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), 
-                                      self.h.n_fft, 
-                                      self.h.num_mels, 
-                                      self.h.sampling_rate, 
-                                      self.h.hop_size, 
-                                      self.h.win_size, 
-                                      self.h.fmin, 
-                                      self.h.fmax)
-            
-            val_error = F.l1_loss(y_mel, y_g_hat_mel).item()
-            self.log('val_mel_error', val_error)
-
-            if batch_idx <= 4:
-                self.logger.experiment.add_figure(f'Validation/y_hat_spec_{batch_idx}', 
-                                                  plot_spectrogram(y_g_hat_mel.squeeze(0).cpu().numpy()), 
-                                                  self.steps)
-                self.logger.experiment.add_audio(f'Validation/y_hat_audio_{batch_idx}', 
-                                                 y_g_hat[0], 
-                                                 self.steps, 
-                                                 sample_rate=self.h.sampling_rate)
-
-        def configure_optimizers(self):
-            optim_g = torch.optim.AdamW(self.generator.parameters(), 
-                                        lr=self.h.learning_rate, 
-                                        betas=[self.h.adam_beta_1, self.h.adam_beta_2])
-            optim_d = torch.optim.AdamW(itertools.chain(self.mpd.parameters(), self.msd.parameters()), 
-                                        lr=self.h.learning_rate, 
-                                        betas=[self.h.adam_beta_1, self.h.adam_beta_2])
-
-            scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=self.h.lr_decay)
-            scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=self.h.lr_decay)
-
-            return [optim_d, optim_g], [scheduler_d, scheduler_g]
+        loss_fm_p = feature_loss(fmap_dp_r, fmap_dp_g)
+        loss_fm_s = feature_loss(fmap_ds_r, fmap_ds_g)
         
-        def train_dataloader(self):
-            training_files, _ = get_dataset_filelist(self.a)
-            dataset = MelDataset(training_files, 
-                                 self.h.segment_size, 
-                                 self.h.n_fft, 
-                                 self.h.num_mels, 
-                                 self.h.hop_size, 
-                                 self.h.win_size, 
-                                 self.h.sampling_rate, 
-                                 self.h.fmin, 
-                                 self.h.fmax)
-            return DataLoader(dataset, 
-                              batch_size=self.h.batch_size, 
-                              num_workers=self.h.num_workers,
-                              pin_memory=True,
-                              drop_last=True)
+        loss_gen_p, _ = generator_loss(y_dp_hat_g)
+        loss_gen_s, _ = generator_loss(y_ds_hat_g)
+
+        loss_gen = loss_mel + loss_fm_p + loss_fm_s + loss_gen_p + loss_gen_s
+
+        self.manual_backward(loss_gen)
+        opt_g.step()
+        sch_g.step()
+        opt_g.zero_grad()
+        self.untoggle_optimizer(opt_g)
+
+        return loss_disc + loss_gen
         
-        def val_dataloader(self):
-            _, validation_files = get_dataset_filelist(self.a)
-            dataset = MelDataset(validation_files, 
-                                 self.h.segment_size, 
-                                 self.h.n_fft, 
-                                 self.h.num_mels, 
-                                 self.h.hop_size, 
-                                 self.h.win_size, 
-                                 self.h.sampling_rate, 
-                                 self.h.fmin, 
-                                 self.h.fmax)
-            return DataLoader(dataset, 
-                              batch_size=1, 
-                              num_workers=self.h.num_workers,
-                              pin_memory=True,
-                              drop_last=True)
+    def validation_step(self, batch, batch_idx):
+        x, y, _, y_mel = batch
+        y = y.unsqueeze(1)
+
+        y_g_hat = self.generator(x)
+        y_g_hat_mel = mel_spectrogram(y_g_hat.squeeze(1), 
+                                    self.h.n_fft, 
+                                    self.h.num_mels, 
+                                    self.h.sampling_rate, 
+                                    self.h.hop_size, 
+                                    self.h.win_size, 
+                                    self.h.fmin, 
+                                    self.h.fmax)
+        
+        val_error = F.l1_loss(y_mel, y_g_hat_mel).item()
+        self.log('val_mel_error', val_error)
+
+        if batch_idx <= 4:
+            self.logger.experiment.add_figure(f'Validation/y_hat_spec_{batch_idx}', 
+                                                plot_spectrogram(y_g_hat_mel.squeeze(0).cpu().numpy()), 
+                                                self.steps)
+            self.logger.experiment.add_audio(f'Validation/y_hat_audio_{batch_idx}', 
+                                                y_g_hat[0], 
+                                                self.steps, 
+                                                sample_rate=self.h.sampling_rate)
+
+    def configure_optimizers(self):
+        optim_g = torch.optim.AdamW(self.generator.parameters(), 
+                                    lr=self.h.learning_rate, 
+                                    betas=[self.h.adam_b1, self.h.adam_b2])
+        optim_d = torch.optim.AdamW(itertools.chain(self.mpd.parameters(), self.msd.parameters()), 
+                                    lr=self.h.learning_rate, 
+                                    betas=[self.h.adam_b1, self.h.adam_b2])
+
+        scheduler_g = torch.optim.lr_scheduler.ExponentialLR(optim_g, gamma=self.h.lr_decay)
+        scheduler_d = torch.optim.lr_scheduler.ExponentialLR(optim_d, gamma=self.h.lr_decay)
+
+        return [optim_d, optim_g], [scheduler_d, scheduler_g]
+    
+    def train_dataloader(self):
+        training_files, _ = get_dataset_filelist(self.a)
+        dataset = MelDataset(training_files, 
+                                self.h.segment_size, 
+                                self.h.n_fft, 
+                                self.h.num_mels, 
+                                self.h.hop_size, 
+                                self.h.win_size, 
+                                self.h.sampling_rate, 
+                                self.h.fmin, 
+                                self.h.fmax)
+        return DataLoader(dataset, 
+                            batch_size=self.h.batch_size, 
+                            num_workers=self.h.num_workers,
+                            pin_memory=True,
+                            drop_last=True)
+    
+    def val_dataloader(self):
+        _, validation_files = get_dataset_filelist(self.a)
+        dataset = MelDataset(validation_files, 
+                                self.h.segment_size, 
+                                self.h.n_fft, 
+                                self.h.num_mels, 
+                                self.h.hop_size, 
+                                self.h.win_size, 
+                                self.h.sampling_rate, 
+                                self.h.fmin, 
+                                self.h.fmax)
+        return DataLoader(dataset, 
+                            batch_size=1, 
+                            num_workers=self.h.num_workers,
+                            pin_memory=True,
+                            drop_last=True)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -183,7 +202,7 @@ def main():
         max_epochs=a.training_epochs,
         devices=h.num_gpus if h.num_gpus > 0 else 1,
         accelerator='gpu' if h.num_gpus > 0 else 'cpu',
-        strategy="ddp" if h.num_gpus > 1 else None,
+        strategy="ddp" if h.num_gpus > 1 else 'auto',
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,
         log_every_n_steps=a.stdout_interval
