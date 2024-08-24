@@ -62,10 +62,10 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     y = y.squeeze(1) # shape (1, segment_size+int((n_fft-hop_size)/2)*2)
 
     spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window[str(y.device)],
-                      center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=False) # shape (1, 1+n_fft//2, n_frames, 2)
+                      center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=True) # shape (1, 1+n_fft//2, n_frames)
     # return_complex=False returns a tensor with an additional dimension for the real and imaginary parts
 
-    spec = torch.sqrt(spec.pow(2).sum(-1)+(1e-9)) # sum over the complex dimension (=absolute value) # shape (1, 1+n_fft//2, n_frames)
+    spec = torch.abs(spec) # sum over the complex dimension (=absolute value) # shape (1, 1+n_fft//2, n_frames)
 
     spec = torch.matmul(mel_basis[str(fmax)+'_'+str(y.device)], spec) # shape (num_mels, n_frames)
     spec = spectral_normalize_torch(spec)
